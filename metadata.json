@@ -1,0 +1,6 @@
+{"name": "Bolt",
+ "description":
+ "Authorize Thunderbolt 3 devices",
+ "uuid": "bolt@gnome.org",
+ "shell-version": ["3.26", "3.24", "3.22"]
+}
