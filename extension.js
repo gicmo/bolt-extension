@@ -28,7 +28,7 @@ const PanelMenu = imports.ui.panelMenu;
 const Signals = imports.signals;
 const St = imports.gi.St;
 
-const BoltClient = Extension.imports.client;
+const Bolt = Extension.imports.client;
 
 /* ui */
 
@@ -54,7 +54,7 @@ const BoltButton = new Lang.Class({
 	this._signals = [];
 	this.connectSignal(Main.sessionMode, 'updated', this._onSessionUpdated);
 
-	this._client = new BoltClient.BoltClient(Lang.bind(this, this._onClientReady));
+	this._client = new Bolt.Client(Lang.bind(this, this._onClientReady));
 	this.connectSignal(this._client, 'device-added', this._onDeviceAdded);
 
 	this._devicesToAuthorize = [];
@@ -93,7 +93,7 @@ const BoltButton = new Lang.Class({
     _onDeviceAdded: function(cli, dev) {
 	log('[%s] device added: %s '.format(dev.Uid, dev.Name));
 
-	if (dev.Status !== 2) {
+	if (dev.Status !== Bolt.Status.CONNECTED) {
 	    log('[%s] invalid state: %d'.format(dev.Uid, dev.Status));
 	    return;
 	}

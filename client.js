@@ -60,7 +60,17 @@ const BoltDeviceProxy = Gio.DBusProxy.makeProxyWrapper(BoltDeviceInterface);
 
 /*  */
 
-var BoltClient = new Lang.Class({
+const Status = {
+    DISCONNECTED: 0,
+    CONNECTED: 1,
+    AUTHORIZING: 2,
+    AUTH_ERROR: 3,
+    AUTHORIZED: 4,
+    AUTHORIZED_SECURE: 5,
+    AUTHORIZED_NEWKY: 6
+};
+
+var Client = new Lang.Class({
     Name: 'BoltClient',
 
     _init: function(readyCallback) {
@@ -105,4 +115,4 @@ var BoltClient = new Lang.Class({
     }
 });
 
-Signals.addSignalMethods(BoltClient.prototype);
+Signals.addSignalMethods(Client.prototype);
