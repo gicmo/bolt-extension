@@ -144,8 +144,10 @@ const BoltButton = new Lang.Class({
 	    return GLib.SOURCE_REMOVE;
 	}
 
-	log('[%s] authorizing device: %s'.format(dev.Uid, dev.Name));
-	dev.AuthorizeRemote(Lang.bind(this, this._onAuthorizeDone));
+	log('[%s] enrolling device: %s'.format(dev.Uid, dev.Name));
+	this._client.enrollDevice(dev.Uid,
+				  Bolt.Policy.DEFAULT,
+				  Lang.bind(this, this._onAuthorizeDone));
 	return GLib.SOURCE_REMOVE;
     },
 

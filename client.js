@@ -31,6 +31,14 @@ const BoltClientInterface = '<node> \
     <method name="ListDevices"> \
       <arg name="devices" direction="out" type="ao"> </arg> \
     </method> \
+    <method name="DeviceByUid"> \
+      <arg type="s" name="uid" direction="in"> </arg> \
+    </method> \
+    <method name="EnrollDevice"> \
+      <arg type="s" name="uid" direction="in"> </arg> \
+      <arg type="u" name="policy" direction="in"> </arg> \
+      <arg name="device" direction="out" type="o"> </arg> \
+    </method> \
     <signal name="DeviceAdded"> \
       <arg name="device" type="o"> </arg> \
     </signal> \
@@ -52,6 +60,7 @@ const BoltDeviceInterface = '<node> \
     <property name="Policy" type="u" access="read"></property> \
     <property name="Key" type="u" access="read"></property> \
     <method name="Authorize"> </method> \
+    <method name="Forget"> </method> \
   </interface> \
 </node>';
 
@@ -60,7 +69,7 @@ const BoltDeviceProxy = Gio.DBusProxy.makeProxyWrapper(BoltDeviceInterface);
 
 /*  */
 
-const Status = {
+var Status = {
     DISCONNECTED: 0,
     CONNECTED: 1,
     AUTHORIZING: 2,
@@ -68,6 +77,12 @@ const Status = {
     AUTHORIZED: 4,
     AUTHORIZED_SECURE: 5,
     AUTHORIZED_NEWKY: 6
+};
+
+var Policy = {
+    DEFAULT: 0,
+    MANUAL: 1,
+    AUTO:2
 };
 
 var Client = new Lang.Class({
@@ -112,7 +127,22 @@ var Client = new Lang.Class({
 	    this._cli.disconnectSignal(sid);
 	}
 	this._cli = null;
-    }
+    },
+
+    enrollDevice: function(id, policy, callback) {
+	this._cli.EnrollDeviceRemote(id, policy, Lang.bind(this, function (res, error) {
+	    if (error) {
+		callback(null, error);
+		return;
+	    }
+
+	    let [path] = res;
+	    let device = new BoltDeviceProxy(Gio.DBus.system,
+					     "org.freedesktop.Bolt",
+					     path);
+	    callback(device, null);
+	}));
+    },
 });
 
 Signals.addSignalMethods(Client.prototype);
