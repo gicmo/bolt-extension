@@ -39,6 +39,7 @@ const BoltClientInterface = '<node> \
     <method name="EnrollDevice"> \
       <arg type="s" name="uid" direction="in"> </arg> \
       <arg type="u" name="policy" direction="in"> </arg> \
+      <arg type="u" name="flags" direction="in"> </arg> \
       <arg name="device" direction="out" type="o"> </arg> \
     </method> \
     <method name="ForgetDevice">  \
@@ -65,7 +66,9 @@ const BoltDeviceInterface = '<node> \
     <property name="Stored" type="b" access="read"></property> \
     <property name="Policy" type="u" access="read"></property> \
     <property name="Key" type="u" access="read"></property> \
-    <method name="Authorize"> </method> \
+    <method name="Authorize"> \
+      <arg type="u" name="flags" direction="in"> </arg> \
+    </method> \
   </interface> \
 </node>';
 
@@ -88,6 +91,10 @@ var Policy = {
     DEFAULT: 0,
     MANUAL: 1,
     AUTO:2
+};
+
+var AuthFlags = {
+    NONE: 0,
 };
 
 const BOLT_DBUS_NAME = 'org.freedesktop.bolt';
@@ -317,6 +324,7 @@ var AuthRobot = new Lang.Class({
 	log('[%s] enrolling device: %s'.format(dev.Uid, dev.Name));
 	this._client.enrollDevice(dev.Uid,
 				  Policy.DEFAULT,
+				  AuthFlags.NONE,
 				  Lang.bind(this, this._onEnrollDone));
 	return GLib.SOURCE_REMOVE;
     },
