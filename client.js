@@ -23,21 +23,26 @@ const GLib = imports.gi.GLib;
 const Lang = imports.lang;
 const Signals = imports.signals;
 
-/*  */
+/* Keep in sync with data/org.freedesktop.bolt.xml */
 
 const BoltClientInterface = '<node> \
-  <interface name="org.freedesktop.Bolt1.Manager"> \
-    <property name="Version" type="s" access="read"></property> \
+  <interface name="org.freedesktop.bolt1.Manager"> \
+    <property name="Version" type="u" access="read"></property> \
+    <property name="Probing" type="b" access="read"></property> \
     <method name="ListDevices"> \
       <arg name="devices" direction="out" type="ao"> </arg> \
     </method> \
     <method name="DeviceByUid"> \
       <arg type="s" name="uid" direction="in"> </arg> \
+      <arg name="device" direction="out" type="o"> </arg> \
     </method> \
     <method name="EnrollDevice"> \
       <arg type="s" name="uid" direction="in"> </arg> \
       <arg type="u" name="policy" direction="in"> </arg> \
       <arg name="device" direction="out" type="o"> </arg> \
+    </method> \
+    <method name="ForgetDevice">  \
+      <arg type="s" name="uid" direction="in"> </arg> \
     </method> \
     <signal name="DeviceAdded"> \
       <arg name="device" type="o"> </arg> \
@@ -49,18 +54,18 @@ const BoltClientInterface = '<node> \
 </node>';
 
 const BoltDeviceInterface = '<node> \
-  <interface name="org.freedesktop.Bolt1.Device"> \
+  <interface name="org.freedesktop.bolt1.Device"> \
     <property name="Uid" type="s" access="read"></property> \
     <property name="Name" type="s" access="read"></property> \
     <property name="Vendor" type="s" access="read"></property> \
     <property name="Status" type="u" access="read"></property> \
     <property name="SysfsPath" type="s" access="read"></property> \
     <property name="Security" type="u" access="read"></property> \
-    <property name="Store" type="u" access="read"></property> \
+    <property name="Parent" type="s" access="read"></property> \
+    <property name="Stored" type="b" access="read"></property> \
     <property name="Policy" type="u" access="read"></property> \
     <property name="Key" type="u" access="read"></property> \
     <method name="Authorize"> </method> \
-    <method name="Forget"> </method> \
   </interface> \
 </node>';
 
@@ -85,20 +90,24 @@ var Policy = {
     AUTO:2
 };
 
+const BOLT_DBUS_NAME = 'org.freedesktop.bolt';
+const BOLT_DBUS_PATH = '/org/freedesktop/bolt';
+
 var Client = new Lang.Class({
     Name: 'BoltClient',
 
     _init: function(readyCallback) {
 	this._readyCallback = readyCallback;
-	new BoltClientProxy(
+
+	this._cli = new BoltClientProxy(
 	    Gio.DBus.system,
-	    'org.freedesktop.Bolt',
-	    '/org/freedesktop/Bolt',
+	    BOLT_DBUS_NAME,
+	    BOLT_DBUS_PATH,
 	    Lang.bind(this, this._onProxyReady)
 	);
 
 	this._signals = [];
-
+	this.probing = false;
     },
 
     _onProxyReady: function(proxy, error) {
@@ -107,15 +116,30 @@ var Client = new Lang.Class({
 	    return;
 	}
 	this._cli = proxy;
+	this._cli.connect('g-properties-changed', Lang.bind(this, this._onPropertiesChanged));
 	let s = this._cli.connectSignal('DeviceAdded', Lang.bind(this, this._onDeviceAdded));
 	this._signals.push(s);
-	this._readyCallback();
+
+	this.probing = this._cli.Probing;
+	if (this.probing)
+	    this.emit('probing-changed', this.probing);
+
+	this._readyCallback(this);
+    },
+
+    _onPropertiesChanged: function(proxy, properties) {
+        let unpacked = properties.deep_unpack();
+        if (!('Probing' in unpacked))
+	    return;
+
+	this.probing = this._cli.Probing;
+	this.emit('probing-changed', this.probing);
     },
 
     _onDeviceAdded: function(proxy, emitter, params) {
 	let [path] = params;
 	let device = new BoltDeviceProxy(Gio.DBus.system,
-					 "org.freedesktop.Bolt",
+					 BOLT_DBUS_NAME,
 					 path);
 	this.emit('device-added', device);
     },
@@ -126,7 +150,30 @@ var Client = new Lang.Class({
 	    let sid = this._signals.shift();
 	    this._cli.disconnectSignal(sid);
 	}
+	this._cli.disconnectAll();
 	this._cli = null;
+    },
+
+    listDevices: function(callback) {
+	this._cli.ListDevicesRemote(Lang.bind(this, function (res, error) {
+	    if (error) {
+		callback(null, error);
+		return;
+	    }
+
+	    let [paths] = res;
+
+	    let devices = [];
+	    for (let i = 0; i < paths.length; i++) {
+		let path = paths[i];
+		let device = new BoltDeviceProxy(Gio.DBus.system,
+						 BOLT_DBUS_NAME,
+						 path);
+		devices.push(device);
+	    }
+	    callback (devices, null);
+	}));
+
     },
 
     enrollDevice: function(id, policy, callback) {
@@ -138,11 +185,143 @@ var Client = new Lang.Class({
 
 	    let [path] = res;
 	    let device = new BoltDeviceProxy(Gio.DBus.system,
-					     "org.freedesktop.Bolt",
+					     BOLT_DBUS_NAME,
 					     path);
 	    callback(device, null);
+	}));
+    },
+
+    deviceGetParent: function(dev, callback) {
+	let parentUid = dev.Parent;
+
+	if (!parentUid) {
+	    callback (null, dev, null);
+	    return;
+	}
+
+	this._cli.DeviceByUidRemote(dev.Parent, Lang.bind(this, function (res, error) {
+	    if (error) {
+		callback(null, dev, error);
+		return;
+	    }
+
+	    let [path] = res;
+	    let parent = new BoltDeviceProxy(Gio.DBus.system,
+					     BOLT_DBUS_NAME,
+					     path);
+	    callback(parent, dev, null);
 	}));
     },
 });
 
 Signals.addSignalMethods(Client.prototype);
+
+/* helper class to automatically authorize new devices */
+var AuthRobot = new Lang.Class({
+    Name: 'BoltAuthRobot',
+
+    _init: function(client) {
+
+	this._client = client;
+
+	this._signals = [];
+
+	this._devicesToEnroll = [];
+	this._enrolling = false;
+
+	this._client.connect('device-added', Lang.bind(this, this._onDeviceAdded));
+    },
+
+    close: function() {
+	this.disconnectAll();
+	this._client = null;
+    },
+
+    _connectSignal: function(obj, name, callback) {
+	let signal_id = obj.connect(name, Lang.bind(this, callback));
+	this._signals.push([obj, signal_id]);
+	log('connecting sid: ' + signal_id + 'obj: ' + obj);
+    },
+
+    /* the "device-added" signal will be emitted by boltd for every
+     * device that is not currently stored in the database. We are
+     * only interested in those devices, because all known devices
+     * will be handled by the user himself */
+    _onDeviceAdded: function(cli, dev) {
+	log('[%s] device added: %s '.format(dev.Uid, dev.Name));
+
+	if (dev.Status !== Status.CONNECTED) {
+	    log('[%s] invalid state: %d'.format(dev.Uid, dev.Status));
+	    return;
+	}
+
+	/* check if we should enroll the device */
+	let res = [false];
+	this.emit('enroll-device', dev, res);
+	if (res[0] !== true) {
+	    return;
+	}
+
+	/* ok, we should authorize the device, add it to the back
+	 * of the list  */
+	log('[%s] scheduled for authorization'.format(dev.Uid));
+	this._devicesToEnroll.push(dev);
+	this._enrollDevices();
+    },
+
+    /* The enrollment queue:
+     *   - new devices will be added to the end of the array.
+     *   - an idle callback will be scheduled that will keep
+     *     calling itself as long as there a devices to be
+     *     enrolled.
+     */
+    _enrollDevices: function() {
+	if (this._enrolling) {
+	    return;
+	}
+
+	this.enrolling = true;
+	GLib.idle_add(GLib.PRIORITY_DEFAULT,
+		      Lang.bind(this, this._enrollDevicesIdle));
+    },
+
+    _onEnrollDone: function(device, error) {
+
+	log('[%s] enrolling done'.format(device.Uid));
+
+	if (error) {
+	    this.emit('enroll-failed', error, device);
+	}
+
+	/* TODO: scan the list of devices to be authorized for children
+	 *  of this device and remove them (and their children and
+	 *  their children and ....) from the device queue
+	 */
+	this._enrolling = this._devicesToEnroll.length > 0;
+	log('enrolling; keep going: ' + this._enrolling);
+
+	if (this._enrolling) {
+	    GLib.idle_add(GLib.PRIORITY_DEFAULT,
+			  Lang.bind(this, this._enrollDevicesIdle));
+	}
+    },
+
+    _enrollDevicesIdle: function() {
+	let devices = this._devicesToEnroll;
+
+	let dev = devices.shift();
+	if (dev === undefined) {
+	    return GLib.SOURCE_REMOVE;
+	}
+
+	log('[%s] enrolling device: %s'.format(dev.Uid, dev.Name));
+	this._client.enrollDevice(dev.Uid,
+				  Policy.DEFAULT,
+				  Lang.bind(this, this._onEnrollDone));
+	return GLib.SOURCE_REMOVE;
+    },
+
+
+});
+
+Signals.addSignalMethods(AuthRobot.prototype);
