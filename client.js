@@ -29,6 +29,7 @@ const BoltClientInterface = '<node> \
   <interface name="org.freedesktop.bolt1.Manager"> \
     <property name="Version" type="u" access="read"></property> \
     <property name="Probing" type="b" access="read"></property> \
+    <property name="AuthMode" type="s" access="readwrite"></property> \
     <method name="ListDevices"> \
       <arg name="devices" direction="out" type="ao"> </arg> \
     </method> \
@@ -38,8 +39,8 @@ const BoltClientInterface = '<node> \
     </method> \
     <method name="EnrollDevice"> \
       <arg type="s" name="uid" direction="in"> </arg> \
-      <arg type="u" name="policy" direction="in"> </arg> \
-      <arg type="u" name="flags" direction="in"> </arg> \
+      <arg type="s" name="policy" direction="in"> </arg> \
+      <arg type="s" name="flags" direction="in"> </arg> \
       <arg name="device" direction="out" type="o"> </arg> \
     </method> \
     <method name="ForgetDevice">  \
@@ -59,15 +60,19 @@ const BoltDeviceInterface = '<node> \
     <property name="Uid" type="s" access="read"></property> \
     <property name="Name" type="s" access="read"></property> \
     <property name="Vendor" type="s" access="read"></property> \
-    <property name="Status" type="u" access="read"></property> \
-    <property name="SysfsPath" type="s" access="read"></property> \
-    <property name="Security" type="u" access="read"></property> \
+    <property name="Type" type="s" access="read"></property> \
+    <property name="Status" type="s" access="read"></property> \
     <property name="Parent" type="s" access="read"></property> \
+    <property name="SysfsPath" type="s" access="read"></property> \
     <property name="Stored" type="b" access="read"></property> \
-    <property name="Policy" type="u" access="read"></property> \
-    <property name="Key" type="u" access="read"></property> \
+    <property name="Policy" type="s" access="read"></property> \
+    <property name="Key" type="s" access="read"></property> \
+    <property name="Label" type="s" access="read"></property> \
+    <property name="ConnectTime" type="t" access="read"></property> \
+    <property name="AuthorizeTime" type="t" access="read"></property> \
+    <property name="StoreTime" type="t" access="read"></property> \
     <method name="Authorize"> \
-      <arg type="u" name="flags" direction="in"> </arg> \
+      <arg type="s" name="flags" direction="in"> </arg> \
     </method> \
   </interface> \
 </node>';
@@ -78,23 +83,34 @@ const BoltDeviceProxy = Gio.DBusProxy.makeProxyWrapper(BoltDeviceInterface);
 /*  */
 
 var Status = {
-    DISCONNECTED: 0,
-    CONNECTED: 1,
-    AUTHORIZING: 2,
-    AUTH_ERROR: 3,
-    AUTHORIZED: 4,
-    AUTHORIZED_SECURE: 5,
-    AUTHORIZED_NEWKY: 6
+    DISCONNECTED: 'disconnected',
+    CONNECTED: 'connected',
+    CONNECTING: 'connecting',
+    AUTHORIZING: 'authorizing',
+    AUTH_ERROR: 'auth-error',
+    AUTHORIZED: 'authorized',
+    AUTHORIZED_SECURE: 'authorized-secure',
+    AUTHORIZED_NEWKEY: 'authorized-newkey'
 };
 
 var Policy = {
-    DEFAULT: 0,
-    MANUAL: 1,
-    AUTO:2
+    DEFAULT: 'default',
+    MANUAL: 'manual',
+    AUTO: 'auto'
 };
+
 
 var AuthFlags = {
     NONE: 0,
+};
+
+var AuthCtrl = {
+    NONE: 'none',
+};
+
+var AuthMode = {
+    DISABLED: 'disabled',
+    ENABLED: 'enabled'
 };
 
 const BOLT_DBUS_NAME = 'org.freedesktop.bolt';
@@ -103,47 +119,44 @@ const BOLT_DBUS_PATH = '/org/freedesktop/bolt';
 var Client = new Lang.Class({
     Name: 'BoltClient',
 
-    _init: function(readyCallback) {
-	this._readyCallback = readyCallback;
+    _init() {
 
-	this._cli = new BoltClientProxy(
+	this._proxy = null;
+        new BoltClientProxy(
 	    Gio.DBus.system,
 	    BOLT_DBUS_NAME,
 	    BOLT_DBUS_PATH,
-	    Lang.bind(this, this._onProxyReady)
+	    this._onProxyReady.bind(this)
 	);
 
-	this._signals = [];
 	this.probing = false;
     },
 
-    _onProxyReady: function(proxy, error) {
+    _onProxyReady(proxy, error) {
 	if (error !== null) {
-	    log(error.message);
+	    log('error creating bolt proxy: %s'.format(error.message));
 	    return;
 	}
-	this._cli = proxy;
-	this._cli.connect('g-properties-changed', Lang.bind(this, this._onPropertiesChanged));
-	let s = this._cli.connectSignal('DeviceAdded', Lang.bind(this, this._onDeviceAdded));
-	this._signals.push(s);
+	this._proxy = proxy;
+	this._propsChangedId = this._proxy.connect('g-properties-changed', this._onPropertiesChanged.bind(this));
+	this._deviceAddedId = this._proxy.connectSignal('DeviceAdded', this._onDeviceAdded.bind(this));
 
-	this.probing = this._cli.Probing;
+	this.probing = this._proxy.Probing;
 	if (this.probing)
 	    this.emit('probing-changed', this.probing);
 
-	this._readyCallback(this);
     },
 
-    _onPropertiesChanged: function(proxy, properties) {
+    _onPropertiesChanged(proxy, properties) {
         let unpacked = properties.deep_unpack();
         if (!('Probing' in unpacked))
 	    return;
 
-	this.probing = this._cli.Probing;
+	this.probing = this._proxy.Probing;
 	this.emit('probing-changed', this.probing);
     },
 
-    _onDeviceAdded: function(proxy, emitter, params) {
+    _onDeviceAdded(proxy, emitter, params) {
 	let [path] = params;
 	let device = new BoltDeviceProxy(Gio.DBus.system,
 					 BOLT_DBUS_NAME,
@@ -152,40 +165,22 @@ var Client = new Lang.Class({
     },
 
     /* public methods */
-    close: function() {
-	while (this._signals.length) {
-	    let sid = this._signals.shift();
-	    this._cli.disconnectSignal(sid);
-	}
-	this._cli.disconnectAll();
-	this._cli = null;
+    close() {
+	this.disconnectAll();
+
+        if (!this._proxy)
+            return;
+
+	this._proxy.disconnectSignal(this._deviceAddedId);
+	this._proxy.disconnect(this._propsChangedId);
+	this._proxy = null;
     },
 
-    listDevices: function(callback) {
-	this._cli.ListDevicesRemote(Lang.bind(this, function (res, error) {
+    enrollDevice(id, policy, callback) {
+	this._proxy.EnrollDeviceRemote(id, policy, AuthCtrl.NONE,
+                                       (res, error) => {
 	    if (error) {
-		callback(null, error);
-		return;
-	    }
-
-	    let [paths] = res;
-
-	    let devices = [];
-	    for (let i = 0; i < paths.length; i++) {
-		let path = paths[i];
-		let device = new BoltDeviceProxy(Gio.DBus.system,
-						 BOLT_DBUS_NAME,
-						 path);
-		devices.push(device);
-	    }
-	    callback (devices, null);
-	}));
-
-    },
-
-    enrollDevice: function(id, policy, callback) {
-	this._cli.EnrollDeviceRemote(id, policy, Lang.bind(this, function (res, error) {
-	    if (error) {
+		Gio.DBusError.strip_remote_error(error);
 		callback(null, error);
 		return;
 	    }
@@ -195,30 +190,13 @@ var Client = new Lang.Class({
 					     BOLT_DBUS_NAME,
 					     path);
 	    callback(device, null);
-	}));
+	});
     },
 
-    deviceGetParent: function(dev, callback) {
-	let parentUid = dev.Parent;
+    get authMode () {
+        return this._proxy.AuthMode;
+    }
 
-	if (!parentUid) {
-	    callback (null, dev, null);
-	    return;
-	}
-
-	this._cli.DeviceByUidRemote(dev.Parent, Lang.bind(this, function (res, error) {
-	    if (error) {
-		callback(null, dev, error);
-		return;
-	    }
-
-	    let [path] = res;
-	    let parent = new BoltDeviceProxy(Gio.DBus.system,
-					     BOLT_DBUS_NAME,
-					     path);
-	    callback(parent, dev, null);
-	}));
-    },
 });
 
 Signals.addSignalMethods(Client.prototype);
@@ -227,51 +205,46 @@ Signals.addSignalMethods(Client.prototype);
 var AuthRobot = new Lang.Class({
     Name: 'BoltAuthRobot',
 
-    _init: function(client) {
+    _init(client) {
 
 	this._client = client;
-
-	this._signals = [];
 
 	this._devicesToEnroll = [];
 	this._enrolling = false;
 
-	this._client.connect('device-added', Lang.bind(this, this._onDeviceAdded));
+	this._client.connect('device-added', this._onDeviceAdded.bind(this));
     },
 
-    close: function() {
+    close() {
 	this.disconnectAll();
+	this._client.disconnectAll();
 	this._client = null;
-    },
-
-    _connectSignal: function(obj, name, callback) {
-	let signal_id = obj.connect(name, Lang.bind(this, callback));
-	this._signals.push([obj, signal_id]);
-	log('connecting sid: ' + signal_id + 'obj: ' + obj);
     },
 
     /* the "device-added" signal will be emitted by boltd for every
      * device that is not currently stored in the database. We are
      * only interested in those devices, because all known devices
      * will be handled by the user himself */
-    _onDeviceAdded: function(cli, dev) {
-	log('[%s] device added: %s '.format(dev.Uid, dev.Name));
-
-	if (dev.Status !== Status.CONNECTED) {
-	    log('[%s] invalid state: %d'.format(dev.Uid, dev.Status));
+    _onDeviceAdded(cli, dev) {
+	if (dev.Status !== Status.CONNECTED)
 	    return;
-	}
+
+        /* check if authorization is enabled in the daemon. if not
+         * we won't even bother authorizing, because we will only
+         * get an error back. The exact contents of AuthMode might
+         * change in the future, but must contain AuthMode.ENABLED
+         * if it is enabled. */
+        if (!cli.authMode.split('|').includes(AuthMode.ENABLED))
+            return;
 
 	/* check if we should enroll the device */
 	let res = [false];
 	this.emit('enroll-device', dev, res);
-	if (res[0] !== true) {
+	if (res[0] !== true)
 	    return;
-	}
 
 	/* ok, we should authorize the device, add it to the back
 	 * of the list  */
-	log('[%s] scheduled for authorization'.format(dev.Uid));
 	this._devicesToEnroll.push(dev);
 	this._enrollDevices();
     },
@@ -282,53 +255,42 @@ var AuthRobot = new Lang.Class({
      *     calling itself as long as there a devices to be
      *     enrolled.
      */
-    _enrollDevices: function() {
-	if (this._enrolling) {
+    _enrollDevices() {
+	if (this._enrolling)
 	    return;
-	}
 
 	this.enrolling = true;
 	GLib.idle_add(GLib.PRIORITY_DEFAULT,
-		      Lang.bind(this, this._enrollDevicesIdle));
+		      this._enrollDevicesIdle.bind(this));
     },
 
-    _onEnrollDone: function(device, error) {
-
-	log('[%s] enrolling done'.format(device.Uid));
-
-	if (error) {
-	    this.emit('enroll-failed', error, device);
-	}
+    _onEnrollDone(device, error) {
+	if (error)
+	    this.emit('enroll-failed', device, error);
 
 	/* TODO: scan the list of devices to be authorized for children
 	 *  of this device and remove them (and their children and
 	 *  their children and ....) from the device queue
 	 */
 	this._enrolling = this._devicesToEnroll.length > 0;
-	log('enrolling; keep going: ' + this._enrolling);
 
-	if (this._enrolling) {
+	if (this._enrolling)
 	    GLib.idle_add(GLib.PRIORITY_DEFAULT,
-			  Lang.bind(this, this._enrollDevicesIdle));
-	}
+			  this._enrollDevicesIdle.bind(this));
     },
 
-    _enrollDevicesIdle: function() {
+    _enrollDevicesIdle() {
 	let devices = this._devicesToEnroll;
 
 	let dev = devices.shift();
-	if (dev === undefined) {
+	if (dev === undefined)
 	    return GLib.SOURCE_REMOVE;
-	}
 
-	log('[%s] enrolling device: %s'.format(dev.Uid, dev.Name));
 	this._client.enrollDevice(dev.Uid,
 				  Policy.DEFAULT,
-				  AuthFlags.NONE,
-				  Lang.bind(this, this._onEnrollDone));
+				  this._onEnrollDone.bind(this));
 	return GLib.SOURCE_REMOVE;
-    },
-
+    }
 
 });
 

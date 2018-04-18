@@ -27,17 +27,17 @@ const MessageTray = imports.ui.messageTray;
 const PanelMenu = imports.ui.panelMenu;
 const Signals = imports.signals;
 const St = imports.gi.St;
+const Shell = imports.gi.Shell;
 
 const Bolt = Extension.imports.client;
 
 
 /* ui */
-
 const BoltButton = new Lang.Class({
     Name: 'Button',
     Extends: PanelMenu.Button,
 
-    _init: function () {
+    _init() {
         this.parent(0.0, "Bolt");
 
         let box = new St.BoxLayout({
@@ -55,78 +55,116 @@ const BoltButton = new Lang.Class({
 
 	this._signals = [];
 
-	this._client = new Bolt.Client(Lang.bind(this, this._onClientReady));
-	this._client.connect('probing-changed', Lang.bind(this, this._onProbing));
+	this._client = new Bolt.Client();
+	this._client.connect('probing-changed', this._onProbing.bind(this));
 
 	this._robot =  new Bolt.AuthRobot(this._client);
 
-	this._robot.connect('enroll-device', Lang.bind(this, this._onEnrollDevice));
-	this._robot.connect('enroll-failed', Lang.bind(this, this._onEnrollFailed));
+	this._robot.connect('enroll-device', this._onEnrollDevice.bind(this));
+	this._robot.connect('enroll-failed', this._onEnrollFailed.bind(this));
 
-	this.actor.connect('destroy', Lang.bind(this, this._onDestroy));
+	Main.sessionMode.connect('updated', this._sync.bind(this));
+        this._sync();
+
+	this._source = null;
+	this.actor.connect('destroy', this._onDestroy.bind(this));
+	log('Bolt extension initialized');
     },
 
-    _onDestroy: function() {
-	log('Destorying bolt');
-	this._client.close();
+    _onDestroy() {
+	log('Destorying bolt extension');
 	this._robot.close();
+	this._client.close();
+    },
+
+    _ensureSource() {
+        if (!this._source) {
+            this._source = new MessageTray.Source(_("Thunderbolt"),
+                                                  'thunderbolt-symbolic');
+            this._source.connect('destroy', () => { this._source = null; });
+
+            Main.messageTray.add(this._source);
+        }
+
+        return this._source;
+    },
+
+    _notify(title, body) {
+        if (this._notification)
+            this._notification.destroy();
+
+        let source = this._ensureSource();
+
+	this._notification = new MessageTray.Notification(source, title, body);
+	this._notification.setUrgency(MessageTray.Urgency.HIGH);
+        this._notification.connect('destroy', () => {
+            this._notification = null;
+        });
+        this._notification.connect('activated', () => {
+            let app = Shell.AppSystem.get_default().lookup_app('gnome-thunderbolt-panel.desktop');
+            if (app)
+                app.activate();
+        });
+        this._source.notify(this._notification);
+    },
+
+    /* Session callbacks */
+    _sync() {
+        let active = !Main.sessionMode.isLocked && !Main.sessionMode.isGreeter;
+	this._icon.visible = active && this._client.probing;
     },
 
     /* Bolt.Client callbacks */
-    _onClientReady: function() {
-	log('Bolt client ready');
-    },
-
-    _onProbing: function(cli, probing) {
+    _onProbing(cli, probing) {
 	if (probing)
 	    this._icon.icon_name = 'thunderbolt-acquiring-symbolic';
 	else
 	    this._icon.icon_name = 'thunderbolt-symbolic';
+
+        this._sync();
     },
 
     /* AuthRobot callbacks */
-    _onEnrollDevice: function(obj, device, policy) {
+    _onEnrollDevice(obj, device, policy) {
 	let auth = !Main.sessionMode.isLocked && !Main.sessionMode.isGreeter;
 	policy[0] = auth;
 
-	log("[%s] auto enrollment: %s".format(device.Uid, auth ? 'yes' : 'no'));
-	if (auth) {
-	    /* we are done */
-	    return;
-	}
+	log("thunderbolt: [%s] auto enrollment: %s".format(device.Name, auth ? 'yes' : 'no'));
+	if (auth)
+	    return; /* we are done */
 
-	const title = '%s Thunderbolt device'.format(device.Name);
-	const body = 'New thunderbolt devices have been detected while you were away. Please disconnect and reconnect the device to start using it.';
-	let source = new MessageTray.Source("Bolt", 'thunderbolt-symbolic');
-	let notification = new MessageTray.Notification(source, title, body);
-	Main.messageTray.add(source);
-	source.notify(notification);
+	const title = _('Unknown Thunderbolt device');
+	const body = _('New device has been detected while you were away. Please disconnect and reconnect the device to start using it.');
+	this._notify(title, body);
     },
 
-    _onEnrollFailed: function (obj, device, error) {
-	const title = 'Thunderbolt authorization error';
-	const body = 'Could not authorize the thunderbolt device: %s'.format(error.message);
-	let source = new MessageTray.Source("Bolt", 'thunderbolt-symbolic');
-	let notification = new MessageTray.Notification(source, title, body);
-	Main.messageTray.add(source);
-	source.notify(notification);
-    },
+    _onEnrollFailed(obj, device, error) {
+	const title = _('Thunderbolt authorization error');
+	const body = _('Could not authorize the Thunderbolt device: %s'.format(error.message));
+	this._notify(title, body);
+    }
 
 });
 
 /* entry points */
 
-let button;
+let button = null;
 
 function init() { }
 
 
 function enable() {
+    if (button)
+	return;
+
     button = new BoltButton();
     Main.panel.addToStatusArea('bolt', button);
 }
 
 function disable() {
+    if (!button)
+	return;
+
     button.destroy();
     button = null;
 }
