@@ -19,7 +19,7 @@ daemon of the bolt. It will automatically authorize new thunderbolt
 devices if the user is logged in.
 
 %prep
-%setup -q -n %{name}-%{version}
+%autosetup -n bolt-extension-%{version}
 
 %build
 # as ninja would say, no work to do.
